@@ -66,7 +66,7 @@ Ship it as five slices, each a commit (or a small branch) with tests. Follow the
 - **Webhooks:** `bill.voided` and `bill.void_rejected` close A.
 - **Done when:** sync accept, sync reject, async accept by webhook, a duplicate void request and an over-balance request are all covered in tests.
 
-### 3. Client notifications (finish the outbox) — PROPOSED, awaiting user approval
+### 3. Client notifications (finish the outbox) — APPROVED 2026-10-01
 - **Endpoints belong to the consumer (source), not to the account.** The source is the integrator; accounts are its customers. A per-account override waits until someone asks for it.
   - New table `webhook_endpoints(id, source, url, secret, event_types[], active)`.
   - API `POST/GET/DELETE /api/v1/webhook_endpoints`, behind the consumer guard. The secret is shown only on create.
@@ -88,7 +88,7 @@ Ship it as five slices, each a commit (or a small branch) with tests. Follow the
 - **PSP port:** `UpdateConnectedAccount`, `DisableConnectedAccount`, `ReactivateConnectedAccount`.
 - **Events:** `workspace_update_completed|failed`, `workspace_disabling_completed|failed`, `workspace_reactivation_completed|failed`.
 
-### 5. Idempotency middleware — PROPOSED, awaiting user approval
+### 5. Idempotency middleware — APPROVED 2026-10-01
 **Hybrid design.** A generic HTTP middleware replays responses for any POST/PATCH. Domain-level uniqueness stays for money: bills, voids and payment profiles, where the key also feeds the ledger and the PSP. The domain layer is needed because the use case commits before the response is stored. A crash between the two re-runs the use case on retry, and only domain uniqueness prevents a double charge.
 
 - **Where:** `httpx`, with its own storage port, implemented in Postgres.
@@ -114,5 +114,7 @@ Ship it as five slices, each a commit (or a small branch) with tests. Follow the
 
 ## Decisions and open items
 1. **Refunds:** partial AND total. Decided by the user on 2026-10-01; see slice 2.
-2. **Notification endpoints:** proposal in slice 3. **Ask the user to approve or adjust before building.**
-3. **Idempotency middleware:** proposal in slice 5. **Ask the user to approve or adjust before building.** If approved, build it first in F2, so the new routes are born with it.
+2. **Notification endpoints:** approved as written in slice 3 (D-009).
+3. **Idempotency middleware:** approved as written in slice 5 (D-010). **Build it first in F2**, so the new routes are born with it.
+
+**Suggested F2 order:** 5 (idempotency) → 1 (wallet) → 2 (void) → 3 (notifications) → 4 (mutation requests).

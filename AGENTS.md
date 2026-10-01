@@ -22,7 +22,11 @@ Commands to run, migrate and test are in `README.md` → Run. After changing `db
 - **Contexts stay sealed:** to reach another context, declare an output port in your `app` and wire it in `cmd/api`.
 - **Domain events:** aggregates record them, and interactors publish them inside their `Tx` (River jobs, never outside a transaction).
 - **Money** is `int64` cents plus a currency.
-- **Idempotent writes:** every mutating API call and every PSP call carries an idempotency key. A retry returns the original result.
+- **Idempotent writes (D-010):**
+  - Money routes (bills, void, payment profiles) require `Idempotency-Key`; other writes honour it when sent.
+  - A retry returns the original response.
+  - Money stays unique at the domain level, too.
+  - Every PSP call carries an idempotency key derived from our id.
 - **PSP calls run outside DB transactions.** The result is then applied in one transaction that locks the aggregate and publishes its events.
 - **PSP is the source of truth** for money state and timestamps. Webhooks are verified (signature + replay window) and deduplicated before they are applied.
 - **Card data:** handle only provider tokens (`token_id`). Logs stay free of tokens, secrets and documents.

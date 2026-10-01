@@ -69,3 +69,34 @@ Append-only. Each entry records the context, the decision and the cost. When you
 - Migrations run through `db/migrations.Up` (goose, then rivermigrate).
 
 **Cost:** a dependency on River and its tables. Alternatives considered: our own worker with LISTEN/NOTIFY (more code), `pg_logical_emit_message` with logical replication (harder to operate), Debezium with Kafka (heavy infra).
+
+## D-008 Partial and total refunds (2026-10-01)
+**Context:** totvs-pay supports partial voids. We had to choose between partial refunds and full voids only.
+**Decision:**
+- Both are allowed, and several void requests may be in flight on one bill.
+- The refundable balance is captured minus resolved voids, minus unresolved requests.
+- A bill stays `captured` until the balance reaches 0, then becomes `voided`.
+- The ledger follows totvs-pay ADR-018: request A, outcome B linked to A, at most one rejection per request.
+
+**Cost:** balance bookkeeping and concurrent-request handling in the billing domain.
+
+## D-009 Client notifications through per-source webhook endpoints (2026-10-01)
+**Context:** domain events reach River jobs, but nothing delivers them to consumers yet.
+**Decision:**
+- Endpoints belong to the consumer (source): `webhook_endpoints(source, url, secret, event_types[])`.
+- Two-stage River fan-out: a dispatch job resolves the endpoints, then one deliver job runs per endpoint, so retries are isolated.
+- Stripe-like envelope with an event `id`.
+- `Payment-Engine-Signature: t=,v1=` HMAC.
+- About 12 attempts with exponential backoff (roughly one day).
+
+**Cost:** no per-account endpoints, and no ordering guarantee. Consumers dedupe by `id` and re-fetch state.
+
+## D-010 Hybrid idempotency: response-replay middleware + domain uniqueness (2026-10-01)
+**Context:** only bills honoured Idempotency-Key; `AGENTS.md` demanded it on every write.
+**Decision:**
+- A generic `httpx` middleware stores `(source, key) → response` and replays it. It answers 422 on a different payload and 409 while the original is in progress. A 5xx frees the key.
+- The key is required on money routes and optional (but honoured) on cadastros.
+- Domain-level uniqueness stays for money, because the use case commits before the response is stored.
+- Keys expire after 24h through a River periodic job.
+
+**Cost:** one more table and write per mutating request. On non-money routes, a crash between commit and response storage can turn a replay into a 409 instead of the original response.

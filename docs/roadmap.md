@@ -12,12 +12,12 @@ Feature parity target: `~/Projects/totvs-pay`. Each phase ends with `go test ./.
 - [x] **F1.6 Clean Architecture + River:**
   - Layers as packages, a webhook ingest use case, ISP ports and routes per context.
   - Domain events published through River (D-006, D-007).
-- [ ] **F2 Wallet + void + client notifications:**
+- [ ] **F2 Idempotency + wallet + void + client notifications** (detailed plan in `docs/next-session.md`):
+  - Idempotency middleware (D-010), built first.
   - Payment profiles (saved cards).
-  - Bill void with an idempotent rejection key.
-  - Turn `NotifyWorker` into signed webhook delivery to client endpoints (River already retries). Emit `*_failed` once a job is discarded.
+  - Partial and total refunds (D-008), with the ledger following totvs-pay ADR-018.
+  - Per-source webhook endpoints with signed, fan-out delivery (D-009).
   - Workspace mutation requests (update, disable, reactivate) as River jobs inserted in the request transaction.
-  - Client notification publisher.
 - [ ] **F3 Pricing:** (add `kernel.Money` here, when fee arithmetic needs it)
   - Fee plans with rates (method × installment × brand, % + fixed, anticipation).
   - External codes per provider.
