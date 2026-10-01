@@ -34,9 +34,9 @@ go vet ./... && go test ./...
 
 Before starting F2, ask the user to review `feat/f1-core` and merge it into `main` (fast-forward). Then branch `feat/f2-wallet-void-notifications` from `main`.
 
-## F2 plan: wallet, void, client notifications, mutation requests
+## F2 plan: wallet, void, client notifications, mutation requests, idempotency
 
-Ship it as four slices, each a commit (or a small branch) with tests. Follow the recipes in `docs/architecture.md`. Reference behaviour lives in `~/Projects/totvs-pay`.
+Ship it as five slices, each a commit (or a small branch) with tests. Follow the recipes in `docs/architecture.md`. Reference behaviour lives in `~/Projects/totvs-pay`.
 
 ### 1. Customer wallet: new context `internal/wallet`
 - **Reference:** totvs-pay `app/contexts/customer_wallet/`, the `payment_profiles` table.
@@ -55,24 +55,28 @@ Ship it as four slices, each a commit (or a small branch) with tests. Follow the
   - The request is transaction A (`void_requested`, keyed by the client's Idempotency-Key).
   - The outcome is transaction B (`voided` or `void_rejected`), which links to A.
   - A sync rejection appends B; it never mutates A. At most one rejection per request: look up B by its link to A before inserting.
-- **Refundable balance:** captured amount minus resolved voids, minus unresolved `void_requested`. Decide whether partial refunds are in scope. totvs-pay supports them, so ask the user.
+- **Partial AND total refunds are in scope** (user decision, 2026-10-01). Several void requests may be in flight on one bill.
+- **Refundable balance:** captured amount minus resolved voids, minus unresolved `void_requested`. A request above the balance gets 422.
 - **Domain:**
-  - `Bill.RequestVoid(amount)` checks the balance.
-  - `Bill.Apply(Void, at)` already covers pending/authorized. A captured bill needs a refund path: `captured → voided` when fully refunded. Extend the FSM and its tests.
+  - `Bill.RequestVoid(amount)` checks the balance; omitting `amount` means "the whole balance".
+  - `Bill.Apply(Void, at)` already covers pending/authorized.
+  - A captured bill stays `captured` while partially refunded and becomes `voided` when the balance reaches 0. No new status; expose `refunded_amount` and `refundable_amount` in the API. Extend the FSM and its tests.
 - **PSP port:** `Void(ctx, idempotencyKey, externalID, amount) (VoidResult, error)`. The fake decides by token or amount.
 - **API:** `POST /api/v1/workspaces/{id}/bills/{bid}/void` (Idempotency-Key).
 - **Webhooks:** `bill.voided` and `bill.void_rejected` close A.
 - **Done when:** sync accept, sync reject, async accept by webhook, a duplicate void request and an over-balance request are all covered in tests.
 
-### 3. Client notifications (finish the outbox)
-- **Endpoints:** consumers register `(source, url, secret)` in a new table. An admin endpoint or seed is enough for now.
-- **Worker:** turn `eventbus.NotifyWorker` into an HTTP POST to the source's URL.
-  - Sign it like the PSPs do: `X-Signature: t=,v1=` HMAC.
-  - Return an error on non-2xx, so River retries with backoff.
-  - Set `MaxAttempts` to about 10.
-  - When the job is discarded, record a `*_failed` notification.
-- **Routing:** decide whether the target source comes from the event (the account's sources) or is resolved by the worker. Prefer resolving in the worker through a port.
-- **Done when:** a test with an `httptest.Server` consumer receives a signed delivery, and a failing consumer causes a retry.
+### 3. Client notifications (finish the outbox) — PROPOSED, awaiting user approval
+- **Endpoints belong to the consumer (source), not to the account.** The source is the integrator; accounts are its customers. A per-account override waits until someone asks for it.
+  - New table `webhook_endpoints(id, source, url, secret, event_types[], active)`.
+  - API `POST/GET/DELETE /api/v1/webhook_endpoints`, behind the consumer guard. The secret is shown only on create.
+- **Two-stage fan-out:**
+  - The current `NotifyArgs` job becomes *dispatch*: it resolves event → workspace → account → sources → subscribed endpoints, then inserts one *deliver* job per endpoint. Each endpoint has its own retry, so one dead consumer never blocks the others.
+  - Domain events must carry `workspace_id`; add it to `BillUpdateCompleted`.
+- **Envelope, Stripe-like:** `{id, type, created_at, account_id, workspace_id, data}`. Consumers dedupe by `id`. Ordering is not guaranteed: `data` carries the current status, and consumers re-fetch if needed.
+- **Signature:** `Payment-Engine-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, "t.body")>`, the same scheme as `psp/fake`.
+- **Delivery:** non-2xx returns an error, so River retries. `MaxAttempts` is about 12 with exponential backoff, roughly one day. A discarded job is recorded as a failed delivery. Auto-disabling endpoints comes later.
+- **Done when:** an `httptest.Server` consumer receives a signed delivery, a failing consumer is retried without delaying a healthy one, and an endpoint not subscribed to an event type receives nothing.
 
 ### 4. Workspace mutation requests (async)
 - **Reference:** totvs-pay `account_management` `mutation_requests`, `RequestUpdate`/`RequestDisabling`/`RequestReactivation`, and `docs/outbox-events.md`.
@@ -84,17 +88,31 @@ Ship it as four slices, each a commit (or a small branch) with tests. Follow the
 - **PSP port:** `UpdateConnectedAccount`, `DisableConnectedAccount`, `ReactivateConnectedAccount`.
 - **Events:** `workspace_update_completed|failed`, `workspace_disabling_completed|failed`, `workspace_reactivation_completed|failed`.
 
+### 5. Idempotency middleware — PROPOSED, awaiting user approval
+**Hybrid design.** A generic HTTP middleware replays responses for any POST/PATCH. Domain-level uniqueness stays for money: bills, voids and payment profiles, where the key also feeds the ledger and the PSP. The domain layer is needed because the use case commits before the response is stored. A crash between the two re-runs the use case on retry, and only domain uniqueness prevents a double charge.
+
+- **Where:** `httpx`, with its own storage port, implemented in Postgres.
+- **Table:** `idempotency_keys(source, key, method, path, request_hash, state, response_status, response_body, created_at)`, PK `(source, key)`.
+- **New key:** insert `in_progress`, run the handler, store the response.
+  - 2xx and 4xx responses are stored.
+  - On 5xx, delete the row so a retry re-executes; the use cases are idempotent.
+- **Seen key:**
+  - Completed with the same request hash: replay the stored response with `Idempotent-Replayed: true`.
+  - Different hash: 422.
+  - Still `in_progress`: 409.
+- **Requirement:** **required** on money routes (bills, void, payment profiles). **Optional but honoured** on create account, workspace and checkout.
+- Update the `AGENTS.md` invariant to say exactly this.
+- **Cleanup:** a River periodic job deletes keys older than 24h.
+- **Done when:** a replay returns a byte-identical response, a concurrent duplicate gets 409, a changed body gets 422, and a 5xx leaves the key reusable.
+
 ## Known debt (pick up when relevant)
-- **Idempotency gap:** `AGENTS.md` says every mutating API call takes an Idempotency-Key, but create account, workspace and checkout don't yet.
-  - Proposal: a generic idempotency middleware storing `(source, key) → response` in Postgres, or enforce it per use case.
-  - Discuss with the user before building.
 - **Pagination** is forward-only (`starting_after`). totvs-pay has bidirectional keyset pagination (its ADR-009).
 - **Webhooks** are processed synchronously (D-004). Revisit if PSP timeouts appear.
 - **Migrations:** the goose CLI was not verified against `db/migrations/migrations.go`. Always use `go run ./cmd/migrate`.
 - **Missing ops pieces:** no CI, Dockerfile, golangci-lint config or metrics yet. Natural candidates once F2 lands.
 - **Insights (F4)** must be computed from our own data. The fake PSP has no settlement data for receivables or conciliations.
 
-## Open questions for the user
-1. Partial refunds in F2, or full void only?
-2. Should client notification endpoints be per source (consumer) or per account?
-3. Should we add the generic idempotency middleware now (it touches every mutating route) or later?
+## Decisions and open items
+1. **Refunds:** partial AND total. Decided by the user on 2026-10-01; see slice 2.
+2. **Notification endpoints:** proposal in slice 3. **Ask the user to approve or adjust before building.**
+3. **Idempotency middleware:** proposal in slice 5. **Ask the user to approve or adjust before building.** If approved, build it first in F2, so the new routes are born with it.
