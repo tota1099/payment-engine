@@ -1,0 +1,8 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: payment
+      POSTGRES_PASSWORD: payment
+      POSTGRES_DB: payment_engine
+    ports: ["5432:5432"]
