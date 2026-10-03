@@ -20,16 +20,23 @@ After editing `db/queries/*.sql` or migrations, run `go tool sqlc generate`.
 A shared Caddy proxy (`deploy/proxy`) fronts every project on the VPS. Each project runs its own compose stack on the external `web` network.
 
 1. Point DNS at the VPS: an `A` record `api.payment-engine` → VPS IP.
-2. Proxy, once per VPS. Copy `deploy/proxy` to `/srv/proxy`, then fill `.env` from `.env.example` and set the domain in `Caddyfile`:
+2. Proxy, once per VPS. Copy `deploy/proxy` to `/srv/proxy`, then fill `.env` from `.env.example`. The proxy is a copy, so re-copy `Caddyfile` after it changes and reload Caddy:
    ```sh
    docker network create web
    cd /srv/proxy && docker compose up -d
    ```
 3. App. Clone the repo into `/srv/payment-engine` and fill `.env` from `.env.example`, then:
    ```sh
-   docker compose -f compose.prod.yml up -d --build   # also the redeploy command, after git pull
+   deploy/deploy.sh   # git pull + rebuild; also the redeploy command
    ```
 4. Call the API with `Authorization: Bearer $PE_API_KEY`. Caddy turns the key into `X-Consumer-Username` (see Auth). The account must list that consumer in `sources`.
+
+**Swagger UI:** `https://api.payment-engine.rporto.tech/docs/`, behind basic auth (`DOCS_USER`/`DOCS_PASSWORD_HASH`). Its *Try it out* calls the real API through the bearer route. The spec is `cmd/api/docs/openapi.yaml`, embedded in the binary: update it when a route or DTO changes.
+
+**Auto-deploy:** `.github/workflows/ci.yml` runs vet and tests on every push and PR. On `main`, it then SSHes into the VPS with a key whose `authorized_keys` entry forces `deploy/deploy.sh`. Secrets:
+- `VPS_HOST`, `VPS_USER`.
+- `VPS_SSH_KEY`: the private key.
+- `VPS_KNOWN_HOSTS`: output of `ssh-keyscan <host>`.
 
 Postgres runs in the stack, on the `pgdata` volume, and is never exposed. Back it up off-box, for example from cron:
 ```sh

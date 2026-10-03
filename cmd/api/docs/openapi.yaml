@@ -1,0 +1,461 @@
+openapi: 3.0.3
+info:
+  title: payment-engine
+  version: "0.1"
+  description: |
+    Payment engine modeled after totvs-pay.
+
+    **Auth**
+    - In production, click *Authorize* and fill `bearer` with the proxy's `PE_API_KEY`. The proxy turns it into `X-Consumer-Username`.
+    - Locally (`go run ./cmd/api`), fill `consumer` instead, with any consumer name.
+    - Every route except `POST /api/v1/accounts` also needs `account`, the `X-Account-Id` of an account that lists your consumer in `sources`.
+
+    **Typical flow**
+    1. `POST /api/v1/accounts`, then `POST /api/v1/accounts/{id}/accredit`.
+    2. Put the account id in *Authorize → account*.
+    3. `POST /api/v1/workspaces`, then `POST /api/v1/workspaces/{id}/accredit`.
+    4. Activate the workspace through the fake PSP: `POST /dev/fake-psp/events` with `{"type":"workspace.activated","external_id":"acct_fake_<workspace_id>"}`.
+    5. Create a checkout and/or a bill. Pix and boleto bills stay `pending` until a `bill.captured` event for `pi_fake_<bill_id>`.
+
+    Money is `int64` cents in BRL. Errors are `{"error": "..."}`.
+servers:
+  - url: /
+security:
+  - bearer: []
+    account: []
+  - consumer: []
+    account: []
+
+tags:
+  - name: accounts
+  - name: workspaces
+  - name: checkouts
+  - name: bills
+  - name: fake-psp
+
+paths:
+  /api/v1/accounts:
+    post:
+      tags: [accounts]
+      summary: Create an account owned by the calling consumer
+      security:
+        - bearer: []
+        - consumer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Account" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /api/v1/accounts/{id}:
+    get:
+      tags: [accounts]
+      summary: Show the authenticated account
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Account" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/v1/accounts/{id}/accredit:
+    post:
+      tags: [accounts]
+      summary: Accredit the account (pending → active)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Account" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces:
+    post:
+      tags: [workspaces]
+      summary: Create a workspace (seller) in the account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Workspace" }
+        "422": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [workspaces]
+      summary: List the account's workspaces
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/starting_after" }
+      responses:
+        "200":
+          description: Page of workspaces
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Workspace" } }
+                  next_cursor: { type: string, format: uuid, nullable: true }
+
+  /api/v1/workspaces/{id}:
+    get:
+      tags: [workspaces]
+      summary: Show a workspace
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Workspace" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/accredit:
+    post:
+      tags: [workspaces]
+      summary: Start accreditation at the PSP (pending → accrediting)
+      description: Activation arrives later as a `workspace.activated` PSP event.
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { $ref: "#/components/responses/Workspace" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/checkouts:
+    post:
+      tags: [checkouts]
+      summary: Create a checkout (payment link)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Checkout" }
+        "422": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [checkouts]
+      summary: List the workspace's checkouts
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/starting_after" }
+      responses:
+        "200":
+          description: Page of checkouts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Checkout" } }
+                  next_cursor: { type: string, format: uuid, nullable: true }
+
+  /api/v1/workspaces/{id}/checkouts/{cid}:
+    get:
+      tags: [checkouts]
+      summary: Show a checkout
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/cid" }]
+      responses:
+        "200": { $ref: "#/components/responses/Checkout" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/checkouts/{cid}/disable:
+    post:
+      tags: [checkouts]
+      summary: Disable a checkout (active → disabled)
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/cid" }]
+      responses:
+        "200": { $ref: "#/components/responses/Checkout" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/checkouts/{cid}/reactivate:
+    post:
+      tags: [checkouts]
+      summary: Reactivate a checkout (disabled → active)
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/cid" }]
+      responses:
+        "200": { $ref: "#/components/responses/Checkout" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/checkouts/{cid}/cancel:
+    post:
+      tags: [checkouts]
+      summary: Cancel a checkout for good
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/cid" }]
+      responses:
+        "200": { $ref: "#/components/responses/Checkout" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/checkouts/{cid}/bills:
+    get:
+      tags: [bills]
+      summary: List the checkout's bills
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { $ref: "#/components/parameters/cid" }
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/starting_after" }
+      responses:
+        "200":
+          description: Page of bills
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Bill" } }
+                  next_cursor: { type: string, format: uuid, nullable: true }
+
+  /api/v1/workspaces/{id}/bills:
+    post:
+      tags: [bills]
+      summary: Charge a one-shot bill
+      description: |
+        Requires `Idempotency-Key`. Retrying with the same key returns the original bill (200).
+        Fake PSP: `token_id: "tok_decline"` declines; credit card comes back `authorized`, pix and boleto `pending`.
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, example: order-123 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BillInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Bill" }
+        "200": { $ref: "#/components/responses/Bill" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+
+  /api/v1/workspaces/{id}/bills/{bid}/transactions:
+    get:
+      tags: [bills]
+      summary: List the bill's ledger transactions
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - name: bid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Transaction" } }
+
+  /dev/fake-psp/events:
+    post:
+      tags: [fake-psp]
+      summary: Simulate a PSP webhook
+      description: |
+        Signs the event and delivers it through the real `/api/v1/webhooks` handler.
+        Enabled outside production, or with `ENABLE_FAKE_PSP_EVENTS=true`.
+        External ids: `acct_fake_<workspace_id>` and `pi_fake_<bill_id>`.
+      security:
+        - bearer: []
+        - consumer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, external_id]
+              properties:
+                type:
+                  type: string
+                  enum: [workspace.activated, workspace.rejected, bill.authorized, bill.captured, bill.failed, bill.voided, bill.charged_back]
+                external_id: { type: string, example: acct_fake_00000000-0000-0000-0000-000000000000 }
+                code: { type: string }
+      responses:
+        "200": { description: Applied }
+        "422": { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: Production. The proxy's PE_API_KEY.
+    consumer:
+      type: apiKey
+      in: header
+      name: X-Consumer-Username
+      description: Local only. The production proxy overwrites this header.
+    account:
+      type: apiKey
+      in: header
+      name: X-Account-Id
+      description: Id of an account owned by your consumer.
+
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    cid:
+      name: cid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    starting_after:
+      name: starting_after
+      in: query
+      description: Cursor; the previous page's next_cursor.
+      schema: { type: string, format: uuid }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+    Account:
+      description: Account
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Account" }
+    Workspace:
+      description: Workspace
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Workspace" }
+    Checkout:
+      description: Checkout
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Checkout" }
+    Bill:
+      description: Bill
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Bill" }
+
+  schemas:
+    AccountInput:
+      type: object
+      required: [name, email, document_type, document_number]
+      properties:
+        name: { type: string, example: Acme Ltda }
+        email: { type: string, format: email, example: finance@acme.test }
+        document_type: { type: string, enum: [cpf, cnpj], example: cnpj }
+        document_number: { type: string, description: "11 digits (cpf) or 14 (cnpj); punctuation is ignored", example: "11222333000181" }
+    Account:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        document_type: { type: string, enum: [cpf, cnpj] }
+        document_number: { type: string }
+        status: { type: string, enum: [pending, active, canceled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WorkspaceInput:
+      type: object
+      required: [name, email, document_type, document_number, mcc]
+      properties:
+        name: { type: string, example: Acme Store }
+        email: { type: string, format: email, example: store@acme.test }
+        document_type: { type: string, enum: [cpf, cnpj], example: cnpj }
+        document_number: { type: string, example: "11222333000181" }
+        mcc: { type: string, description: 4 digits, example: "5411" }
+    Workspace:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        document_type: { type: string }
+        document_number: { type: string }
+        mcc: { type: string }
+        status: { type: string, enum: [pending, accrediting, active, rejected, suspended, canceled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PaymentMethod:
+      type: string
+      enum: [credit_card, pix, boleto]
+    Item:
+      type: object
+      required: [name, amount, quantity]
+      properties:
+        name: { type: string, example: T-shirt }
+        amount: { type: integer, format: int64, description: Unit price in cents, example: 4990 }
+        quantity: { type: integer, example: 1 }
+    CheckoutInput:
+      type: object
+      required: [name, items, payment_methods]
+      properties:
+        name: { type: string, example: Summer sale }
+        items: { type: array, items: { $ref: "#/components/schemas/Item" } }
+        payment_methods: { type: array, items: { $ref: "#/components/schemas/PaymentMethod" }, example: [pix, credit_card] }
+        max_uses: { type: integer, minimum: 1, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true, description: Must be in the future }
+        external_reference: { type: string, nullable: true }
+    Checkout:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        name: { type: string }
+        items: { type: array, items: { $ref: "#/components/schemas/Item" } }
+        payment_methods: { type: array, items: { $ref: "#/components/schemas/PaymentMethod" } }
+        max_uses: { type: integer, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        external_reference: { type: string, nullable: true }
+        url: { type: string }
+        status: { type: string, enum: [active, disabled, canceled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BillInput:
+      type: object
+      required: [amount, payment_method]
+      properties:
+        amount: { type: integer, format: int64, description: Cents, example: 4990 }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        installments: { type: integer, minimum: 1, maximum: 21, example: 1 }
+        token_id: { type: string, description: "Required for credit_card. tok_decline makes the fake PSP decline.", example: tok_visa }
+        checkout_id: { type: string, format: uuid, nullable: true }
+    Bill:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        checkout_id: { type: string, format: uuid, nullable: true }
+        amount: { type: integer, format: int64 }
+        currency: { type: string, example: BRL }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        installments: { type: integer }
+        status: { type: string, enum: [pending, authorized, captured, voided, charged_back, error] }
+        captured_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        amount: { type: integer, format: int64 }
+        status: { type: string }
+        code: { type: string }
+        provider: { type: string }
+        provider_created_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }

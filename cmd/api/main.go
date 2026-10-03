@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"embed"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -56,7 +57,7 @@ func main() {
 	provider := fake.New(env("FAKE_PSP_SECRET", "dev-secret"))
 	srv := &http.Server{
 		Addr:              env("ADDR", ":8080"),
-		Handler:           newApp(pool, provider, eventbus.Publisher{Client: jobs}, os.Getenv("APP_ENV") != "production"),
+		Handler:           newApp(pool, provider, eventbus.Publisher{Client: jobs}, devRoutes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -70,6 +71,18 @@ func main() {
 		slog.Error("server", "err", err)
 		os.Exit(1)
 	}
+}
+
+// docs is the Swagger UI and its OpenAPI spec, served at /docs/. Production
+// puts it behind the proxy's basic auth.
+//
+//go:embed docs
+var docs embed.FS
+
+// devRoutes enables the fake-PSP simulator outside production, or in
+// production while the fake PSP is the only one (ENABLE_FAKE_PSP_EVENTS=true).
+func devRoutes() bool {
+	return os.Getenv("APP_ENV") != "production" || os.Getenv("ENABLE_FAKE_PSP_EVENTS") == "true"
 }
 
 // newApp wires use cases to their adapters and mounts each context's routes.
@@ -117,6 +130,7 @@ func newApp(pool *pgxpool.Pool, provider *fake.Provider, events eventbus.Publish
 	(&checkoutrest.Handler{Checkouts: checkouts}).Routes(mux, account)
 	(&billingrest.Handler{Payments: payments, Queries: billQueries}).Routes(mux, account)
 	webhookHTTP.Routes(mux)
+	mux.Handle("GET /docs/", http.FileServerFS(docs))
 	if devRoutes {
 		mux.HandleFunc("POST /dev/fake-psp/events", fakeEvent(provider, mux))
 	}

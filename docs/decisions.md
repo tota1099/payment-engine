@@ -110,3 +110,12 @@ Append-only. Each entry records the context, the decision and the cost. When you
 - With no API gateway, Caddy acts as one: a bearer key sets `X-Consumer-Username`, other requests get 401, and `/api/v1/webhooks` passes through with the header stripped.
 
 **Cost:** one static key per consumer, and the database shares the VPS's fate until backups or a managed Postgres cover it. Managed Postgres needs a direct (non-pooled) connection because River uses LISTEN/NOTIFY.
+
+## D-012 Swagger UI behind basic auth, push-to-deploy over a forced-command SSH key (2026-10-03)
+**Context:** the deployed API needs a way to be exercised by hand, and deploys were manual.
+**Decision:**
+- A hand-written `cmd/api/docs/openapi.yaml` and a CDN Swagger UI are embedded in the API at `/docs/`. Caddy guards the path with basic auth.
+- `ENABLE_FAKE_PSP_EVENTS=true` keeps `/dev/fake-psp/events` on in production while the fake PSP is the only one. The route stays behind the bearer key.
+- GitHub Actions runs vet and tests. On `main`, it SSHes into the VPS with a key restricted to `command="deploy/deploy.sh"`. A leaked key can only redeploy main.
+
+**Cost:** the spec can drift from the handlers, so it must be updated with every route or DTO change. The deploy rebuilds on the VPS, so there is no image registry and no rollback beyond `git reset`.
