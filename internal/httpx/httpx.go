@@ -1,15 +1,17 @@
 // Package httpx holds the transport glue shared by every context: JSON I/O,
-// domain-error mapping, consumer/account authentication and pagination.
+// domain-error mapping, API-key/account authentication and pagination.
 package httpx
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -81,27 +83,44 @@ func Source(ctx context.Context) string { s, _ := ctx.Value(keySource).(string);
 // AccountID is the authenticated X-Account-Id; set by RequireAccount.
 func AccountID(ctx context.Context) uuid.UUID { id, _ := ctx.Value(keyAccount).(uuid.UUID); return id }
 
-// Base tags the request with a correlation id and reads the consumer
-// (X-Consumer-Username, set by the API gateway) as the request source.
-func Base(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get("X-Request-Id")
-		if id == "" {
-			id = uuid.NewString()
-		}
-		w.Header().Set("X-Request-Id", id)
-		ctx := kernel.WithCorrelationID(r.Context(), id)
-		if src := r.Header.Get("X-Consumer-Username"); src != "" {
-			ctx = context.WithValue(ctx, keySource, src)
-		}
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+// KeySource resolves an API key to its source (consumer), or "" if unknown.
+type KeySource func(ctx context.Context, key string) (string, error)
+
+// KeyHash is how API keys are stored: only their SHA-256, never the key.
+func KeyHash(key string) []byte { h := sha256.Sum256([]byte(key)); return h[:] }
+
+// Base tags the request with a correlation id and authenticates the
+// "Authorization: Bearer <key>" API key, setting its source on the context.
+// A missing or unknown key leaves the source empty; the guards reject it.
+func Base(keys KeySource) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := r.Header.Get("X-Request-Id")
+			if id == "" {
+				id = uuid.NewString()
+			}
+			w.Header().Set("X-Request-Id", id)
+			ctx := kernel.WithCorrelationID(r.Context(), id)
+			r = r.WithContext(ctx)
+			if key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && key != "" {
+				src, err := keys(ctx, key)
+				if err != nil {
+					Fail(w, r, err)
+					return
+				}
+				if src != "" {
+					r = r.WithContext(context.WithValue(ctx, keySource, src))
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func RequireConsumer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if Source(r.Context()) == "" {
-			errorJSON(w, http.StatusForbidden, "invalid consumer")
+			errorJSON(w, http.StatusUnauthorized, "invalid api key")
 			return
 		}
 		next(w, r)
@@ -199,7 +218,7 @@ func Handle(fn HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// ConsumerGuard requires X-Consumer-Username only.
+// ConsumerGuard requires a valid API key only.
 func ConsumerGuard(fn HandlerFunc) http.HandlerFunc { return RequireConsumer(Handle(fn)) }
 
 // AccountGuard requires a consumer that owns X-Account-Id.

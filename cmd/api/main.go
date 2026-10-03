@@ -7,6 +7,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	accountpg "github.com/renanporto/payment-engine/internal/account/adapter/postgres"
@@ -132,9 +134,20 @@ func newApp(pool *pgxpool.Pool, provider *fake.Provider, events eventbus.Publish
 	webhookHTTP.Routes(mux)
 	mux.Handle("GET /docs/", http.FileServerFS(docs))
 	if devRoutes {
-		mux.HandleFunc("POST /dev/fake-psp/events", fakeEvent(provider, mux))
+		mux.HandleFunc("POST /dev/fake-psp/events", httpx.RequireConsumer(fakeEvent(provider, mux)))
 	}
-	return httpx.Base(mux)
+	return httpx.Base(apiKeys(d))(mux)
+}
+
+// apiKeys backs httpx.Base with the api_keys table.
+func apiKeys(d db.DB) httpx.KeySource {
+	return func(ctx context.Context, key string) (string, error) {
+		src, err := d.Q(ctx).APIKeySource(ctx, httpx.KeyHash(key))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return src, err
+	}
 }
 
 // fakeEvent plays the PSP: signs {type, external_id, code} and delivers it

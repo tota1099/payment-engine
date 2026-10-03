@@ -2,34 +2,16 @@
 # Reload after editing: docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 api.payment-engine.rporto.tech {
-	# The API trusts X-Consumer-Username (normally set by an API gateway), so
-	# Caddy plays gateway: a valid bearer key sets the header, anything else
-	# gets 401. A client-sent X-Consumer-Username is always overwritten.
-	# ponytail: one static key per consumer; move to a real gateway when there are many.
-	handle /api/v1/webhooks {
-		# PSP webhooks authenticate by signature, not by key.
-		reverse_proxy payment-engine-api:8080 {
-			header_up -X-Consumer-Username
-		}
-	}
-
-	# Swagger UI. Its "Try it out" calls go through the bearer route below.
+	# Swagger UI. Its "Try it out" calls go to the API, which checks the API key itself.
 	redir /docs /docs/
 	handle /docs/* {
 		basic_auth {
 			{$DOCS_USER} {$DOCS_PASSWORD_HASH}
 		}
-		reverse_proxy payment-engine-api:8080 {
-			header_up -X-Consumer-Username
-		}
+		reverse_proxy payment-engine-api:8080
 	}
 
-	@authed header Authorization "Bearer {$PE_API_KEY}"
-	handle @authed {
-		reverse_proxy payment-engine-api:8080 {
-			header_up X-Consumer-Username {$PE_CONSUMER}
-		}
+	handle {
+		reverse_proxy payment-engine-api:8080
 	}
-
-	respond 401
 }

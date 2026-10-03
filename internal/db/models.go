@@ -23,6 +23,12 @@ type Account struct {
 	UpdatedAt      time.Time
 }
 
+type ApiKey struct {
+	KeyHash   []byte
+	Source    string
+	CreatedAt time.Time
+}
+
 type Bill struct {
 	ID             uuid.UUID
 	WorkspaceID    uuid.UUID

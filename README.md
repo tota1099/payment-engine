@@ -10,6 +10,7 @@ docker compose up -d postgres
 go run ./cmd/migrate        # goose schema + River tables
 go run ./cmd/api            # :8080
 go run ./cmd/worker         # processes River jobs (client notifications)
+go run ./cmd/apikey dev     # prints an API key for source "dev" (see Auth)
 go test ./...          # needs the compose Postgres; each test gets its own schema
 ```
 
@@ -29,7 +30,10 @@ A shared Caddy proxy (`deploy/proxy`) fronts every project on the VPS. Each proj
    ```sh
    deploy/deploy.sh   # git pull + rebuild; also the redeploy command
    ```
-4. Call the API with `Authorization: Bearer $PE_API_KEY`. Caddy turns the key into `X-Consumer-Username` (see Auth). The account must list that consumer in `sources`.
+4. Issue an API key (see Auth). The key is printed once:
+   ```sh
+   docker compose -f compose.prod.yml run --rm --no-deps api /app/apikey my-source
+   ```
 
 **Swagger UI:** `https://api.payment-engine.rporto.tech/docs/`, behind basic auth (`DOCS_USER`/`DOCS_PASSWORD_HASH`). Its *Try it out* calls the real API through the bearer route. The spec is `cmd/api/docs/openapi.yaml`, embedded in the binary: update it when a route or DTO changes.
 
@@ -45,8 +49,8 @@ docker compose -f compose.prod.yml exec -T postgres pg_dump -U payment payment_e
 
 ## Auth
 
-- `X-Consumer-Username` identifies the source of the request (the gateway sets it).
-- `X-Account-Id` names the account. That account must list the consumer in `sources`.
+- `Authorization: Bearer <key>` identifies the **source** (consumer) of the request. Keys are issued with `apikey <source>`, stored only as a SHA-256, and revoked with `DELETE FROM api_keys WHERE source = '<source>'`.
+- `X-Account-Id` names the account. That account must list the source in `sources`, which happens when the source creates it.
 
 ## Fake PSP
 

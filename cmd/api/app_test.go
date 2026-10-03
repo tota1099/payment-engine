@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/renanporto/payment-engine/internal/db"
 	"github.com/renanporto/payment-engine/internal/eventbus"
+	"github.com/renanporto/payment-engine/internal/httpx"
 	"github.com/renanporto/payment-engine/internal/psp/fake"
 	"github.com/renanporto/payment-engine/internal/testdb"
 )
@@ -70,13 +72,24 @@ func TestPaymentFlow(t *testing.T) {
 	srv := httptest.NewServer(newApp(pool, fake.New("secret"), eventbus.Publisher{Client: jobs}, true))
 	defer srv.Close()
 
-	crm := client{t: t, base: srv.URL, headers: map[string]string{"X-Consumer-Username": "crm"}}
+	for key, src := range map[string]string{"key-crm": "crm", "key-other": "other"} {
+		if err := db.New(pool).APIKeyCreate(context.Background(), db.APIKeyCreateParams{KeyHash: httpx.KeyHash(key), Source: src}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anon := client{t: t, base: srv.URL, headers: map[string]string{}}
+	anon.must(401, "POST", "/api/v1/accounts", map[string]any{})
+	anon.must(401, "POST", "/api/v1/accounts", map[string]any{}, "Authorization", "Bearer nope")
+	anon.must(401, "POST", "/api/v1/accounts", map[string]any{}, "X-Consumer-Username", "crm") // the old gateway header is ignored
+	anon.must(401, "POST", "/dev/fake-psp/events", map[string]any{})
+
+	crm := client{t: t, base: srv.URL, headers: map[string]string{"Authorization": "Bearer key-crm"}}
 	acc := crm.must(201, "POST", "/api/v1/accounts", map[string]any{
 		"name": "Acme", "email": "a@acme.com", "document_type": "cnpj", "document_number": "11.222.333/0001-81",
 	})
 	accID := acc["id"].(string)
-	api := client{t: t, base: srv.URL, headers: map[string]string{"X-Consumer-Username": "crm", "X-Account-Id": accID}}
-	intruder := client{t: t, base: srv.URL, headers: map[string]string{"X-Consumer-Username": "other", "X-Account-Id": accID}}
+	api := client{t: t, base: srv.URL, headers: map[string]string{"Authorization": "Bearer key-crm", "X-Account-Id": accID}}
+	intruder := client{t: t, base: srv.URL, headers: map[string]string{"Authorization": "Bearer key-other", "X-Account-Id": accID}}
 	psp := func(want int, ev map[string]any) map[string]any { return crm.must(want, "POST", "/dev/fake-psp/events", ev) }
 
 	intruder.must(403, "GET", "/api/v1/workspaces", nil)

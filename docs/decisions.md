@@ -119,3 +119,14 @@ Append-only. Each entry records the context, the decision and the cost. When you
 - GitHub Actions runs vet and tests. On `main`, it SSHes into the VPS with a key restricted to `command="deploy/deploy.sh"`. A leaked key can only redeploy main.
 
 **Cost:** the spec can drift from the handlers, so it must be updated with every route or DTO change. The deploy rebuilds on the VPS, so there is no image registry and no rollback beyond `git reset`.
+
+## D-013 API keys authenticated by the app, not a gateway header (2026-10-03)
+**Context:** the API trusted `X-Consumer-Username`, a header copied from totvs-pay, where an API gateway sets it. With no gateway, Caddy had to impersonate one (D-011), and local runs trusted the header from any caller.
+**Decision:**
+- Callers send `Authorization: Bearer <key>`. `httpx.Base` hashes the key (SHA-256) and looks it up in `api_keys(key_hash, source)`. The header is gone.
+- Sources stay: they own accounts (`accounts.sources`) and scope D-009 endpoints and D-010 idempotency.
+- `cmd/apikey <source>` issues a key and prints it once.
+- Caddy is back to a plain proxy (TLS plus basic auth on `/docs`). This supersedes the gateway part of D-011.
+- `/dev/fake-psp/events` now needs a valid key too, since the proxy no longer guards it.
+
+**Cost:** one indexed lookup per authenticated request. Keys have no expiry or scopes; revoking means deleting the row.

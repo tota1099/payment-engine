@@ -4,7 +4,7 @@ Use these names in code, API and docs. Status values are typed constants in the 
 
 ## Account management (`internal/account`)
 
-**Account**: the tenant. It is owned by one or more **sources**, the API consumers identified by `X-Consumer-Username`.
+**Account**: the tenant. It is owned by one or more **sources**, the API consumers identified by their API key (`Authorization: Bearer`).
 Statuses: `pending → active → canceled`. There is no KYC step yet.
 
 **Workspace**: a seller under an account, registered at the PSP as a **connected account**.
