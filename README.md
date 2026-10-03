@@ -15,6 +15,27 @@ go test ./...          # needs the compose Postgres; each test gets its own sche
 
 After editing `db/queries/*.sql` or migrations, run `go tool sqlc generate`.
 
+## Deploy (VPS)
+
+A shared Caddy proxy (`deploy/proxy`) fronts every project on the VPS. Each project runs its own compose stack on the external `web` network.
+
+1. Point DNS at the VPS: an `A` record `api.payment-engine` → VPS IP.
+2. Proxy, once per VPS. Copy `deploy/proxy` to `/srv/proxy`, then fill `.env` from `.env.example` and set the domain in `Caddyfile`:
+   ```sh
+   docker network create web
+   cd /srv/proxy && docker compose up -d
+   ```
+3. App. Clone the repo into `/srv/payment-engine` and fill `.env` from `.env.example`, then:
+   ```sh
+   docker compose -f compose.prod.yml up -d --build   # also the redeploy command, after git pull
+   ```
+4. Call the API with `Authorization: Bearer $PE_API_KEY`. Caddy turns the key into `X-Consumer-Username` (see Auth). The account must list that consumer in `sources`.
+
+Postgres runs in the stack, on the `pgdata` volume, and is never exposed. Back it up off-box, for example from cron:
+```sh
+docker compose -f compose.prod.yml exec -T postgres pg_dump -U payment payment_engine | gzip > /backups/pe-$(date +%F).sql.gz
+```
+
 ## Auth
 
 - `X-Consumer-Username` identifies the source of the request (the gateway sets it).

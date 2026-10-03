@@ -1,0 +1,23 @@
+# Shared reverse proxy for every project on the VPS. Copy this folder to
+# /srv/proxy on the server, then:
+#   docker network create web
+#   docker compose up -d
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    env_file: .env
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [web]
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+
+networks:
+  web:
+    external: true

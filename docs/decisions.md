@@ -100,3 +100,13 @@ Append-only. Each entry records the context, the decision and the cost. When you
 - Keys expire after 24h through a River periodic job.
 
 **Cost:** one more table and write per mutating request. On non-money routes, a crash between commit and response storage can turn a replay into a 409 instead of the original response.
+
+## D-011 Single-VPS deploy: shared Caddy + one compose stack per project (2026-10-03)
+**Context:** the engine needs a public home on a VPS that will also host other projects.
+**Decision:**
+- One shared Caddy (`deploy/proxy`) owns ports 80 and 443 and issues TLS for each subdomain. Projects join it through the external `web` Docker network.
+- `compose.prod.yml` runs api, worker, a one-shot migrate and Postgres from one distroless image.
+- Postgres lives in the stack and is not exposed. Backups are `pg_dump` shipped off-box.
+- With no API gateway, Caddy acts as one: a bearer key sets `X-Consumer-Username`, other requests get 401, and `/api/v1/webhooks` passes through with the header stripped.
+
+**Cost:** one static key per consumer, and the database shares the VPS's fate until backups or a managed Postgres cover it. Managed Postgres needs a direct (non-pooled) connection because River uses LISTEN/NOTIFY.

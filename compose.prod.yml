@@ -1,0 +1,47 @@
+# Production stack. Expects the external "web" network shared with the
+# reverse proxy in deploy/proxy. Usage:
+#   docker compose -f compose.prod.yml up -d --build
+x-app: &app
+  build: .
+  image: payment-engine:latest
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    env_file: .env
+    volumes: [pgdata:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 10
+
+  migrate:
+    <<: *app
+    command: ["/app/migrate"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    command: ["/app/api"]
+    container_name: payment-engine-api
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [default, web]
+
+  worker:
+    <<: *app
+    command: ["/app/worker"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata: {}
+
+networks:
+  web:
+    external: true
