@@ -15,3 +15,6 @@ api.payment-engine.rporto.tech {
 		reverse_proxy payment-engine-api:8080
 	}
 }
+
+# FonoGestão: one file per environment (prod, previews, speech), written by /srv/fono-tech/deploy/vps/fono.sh
+import /etc/caddy/fono/*.caddy

@@ -10,6 +10,7 @@ services:
     ports: ["80:80", "443:443", "443:443/udp"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/fono-data/caddy:/etc/caddy/fono:ro   # FonoGestão site blocks, written by /srv/fono-tech/deploy/vps/fono.sh
       - caddy_data:/data
       - caddy_config:/config
     networks: [web]
